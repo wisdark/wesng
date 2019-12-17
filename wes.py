@@ -14,6 +14,8 @@ import sys, csv, re, argparse, os, zipfile, io
 import logging
 from collections import Counter, OrderedDict
 
+import copy
+
 
 # Python 2 compatibility
 if sys.version_info.major == 2:
@@ -57,9 +59,10 @@ class WesException(Exception):
 
 
 # Applictation details
-VERSION = 0.96
+VERSION = 0.98
+RELEASE = ''
 WEB_URL = 'https://github.com/bitsadmin/wesng/'
-BANNER = 'Windows Exploit Suggester %.2f ( %s )' % (VERSION, WEB_URL)
+BANNER = 'Windows Exploit Suggester %.2f%s ( %s )' % (VERSION, RELEASE, WEB_URL)
 FILENAME = 'wes.py'
 
 # Mapping table between build numbers and versions to correctly identify
@@ -161,6 +164,7 @@ def main():
 
     # Append manually specified KBs to list of hotfixes
     hotfixes = list(set(hotfixes + manual_hotfixes))
+    hotfixes_orig = copy.deepcopy(hotfixes)
 
     # Load definitions from definitions.zip (default) or user-provided location
     print('[+] Loading definitions')
@@ -196,6 +200,14 @@ def main():
         filtered = apply_display_filters(found, args.hiddenvuln, args.only_exploits, args.impacts, args.severities)
     else:
         filtered = found
+
+    # If specified, lookup superseeding KBs in the Microsoft Update Catalog
+    # and remove CVEs if a superseeding KB is installed.
+    if args.muc_lookup:
+        from muc_lookup import apply_muc_filter # ony import if necessary since it needs MechanicalSoup
+
+        print("[+] Looking up superseeding hotfixes in the Microsoft Update Catalog")
+        filtered = apply_muc_filter(filtered, hotfixes_orig)
 
     # Split up list of KBs and the potential Service Packs/Cumulative updates available
     kbs, sp = get_patches_servicepacks(filtered, cves, productfilter)
@@ -645,15 +657,21 @@ Impact: %s
 # Output results of wes.py to a .csv file
 def store_results(outputfile, results):
     print('[+] Writing %d results to %s' % (len(results), outputfile))
-    with open(outputfile, 'w', newline='') as f:
-        header = list(results[0].keys())
-        header.remove('Supersedes')
-        writer = csv.DictWriter(f, fieldnames=header, quoting=csv.QUOTE_ALL)
-        writer.writeheader()
-        for r in results:
-            if 'Supersedes' in r:
-                del r['Supersedes']
-            writer.writerow(r)
+
+    # Python 2 compatibility
+    if sys.version_info.major == 2:
+        f = open(outputfile, 'wb')
+    else:
+        f = open(outputfile, 'w', newline='')
+
+    header = list(results[0].keys())
+    header.remove('Supersedes')
+    writer = csv.DictWriter(f, fieldnames=header, quoting=csv.QUOTE_ALL)
+    writer.writeheader()
+    for r in results:
+        if 'Supersedes' in r:
+            del r['Supersedes']
+        writer.writerow(r)
 
 
 # Validate file existence for user-provided arguments
@@ -700,17 +718,20 @@ def parse_arguments():
   Determine vulnerabilities explicitly specifying definitions file
   {0} systeminfo.txt --definitions C:\tmp\mydefs.zip
 
-  List only vulnerabilities with exploits, excluding Edge and Flash
+  List only vulnerabilities with exploits, excluding IE, Edge and Flash
   {0} systeminfo.txt --exploits-only --hide "Internet Explorer" Edge Flash
   {0} systeminfo.txt -e --hide "Internet Explorer" Edge Flash
 
-  Only show vulnerabilities of a certain impact (case insensitive match)
+  Only show vulnerabilities of a certain impact
   {0} systeminfo.txt --impact "Remote Code Execution"
   {0} systeminfo.txt -i "Remote Code Execution"
   
-  Only show vulnerabilities of a certain severity (case insensitive match)
+  Only show vulnerabilities of a certain severity
   {0} systeminfo.txt --severity critical
   {0} systeminfo.txt -s critical
+  
+  Validate supersedence against Microsoft's online Update Catalog
+  {0} systeminfo.txt --muc-lookup
 
   Download latest version of WES-NG
   {0} --update-wes
@@ -762,6 +783,8 @@ def parse_arguments():
     parser.add_argument('-i', '--impact', dest='impacts', nargs='+', default='', help='Only display vulnerabilities with a given impact')
     parser.add_argument('-s', '--severity', dest='severities', nargs='+', default='', help='Only display vulnerabilities with a given severity')
     parser.add_argument('-o', '--output', action='store', dest='outputfile', nargs='?', help='Store results in a file')
+    parser.add_argument("--muc-lookup", dest="muc_lookup", action="store_true", help="Hide vulnerabilities if installed hotfixes are listed in the Microsoft Update Catalog as superseding hotfixes for the original BulletinKB",
+    )
     parser.add_argument('-h', '--help', action='help', help='Show this help message and exit')
 
     # Always show full help when no arguments are provided
